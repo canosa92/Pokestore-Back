@@ -1,5 +1,5 @@
 const axios = require('axios');
-const ProductModel = require('../models/Producto');
+const ProductModel = require('../models/ProductModel');
 const capitalizeFirstLetter = (string) => {
   return string.charAt(0).toUpperCase() + string.slice(1);
 };

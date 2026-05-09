@@ -1,20 +1,12 @@
 const User = require("../models/UserModel");
-const ProductoModel= require('../models/ProductModel')
-const { firebaseapp, admin } = require('../config/firebase');
-const { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword } = require('firebase/auth');
-const { getFirestore, collection, doc, setDoc, getDoc, Timestamp, deleteDoc } = require('firebase/firestore');
-
-const auth = getAuth(firebaseapp);
-const fireDb = getFirestore(firebaseapp);
+const ProductoModel = require('../models/ProductModel');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 const fetchWishListProducts = async (wishList) => {
     try {
-        if (!wishList || wishList.length === 0) {
-            return [];
-        }
-
-        const products = await ProductoModel.find({ _id: { $in: wishList } });
-        return products;
+        if (!wishList || wishList.length === 0) return [];
+        return await ProductoModel.find({ _id: { $in: wishList } });
     } catch (error) {
         console.error('Error fetching wishlist products:', error);
         return [];
@@ -22,95 +14,90 @@ const fetchWishListProducts = async (wishList) => {
 };
 
 const UserController = {
-    
-    async register(req, res, next) {
-    const { email, password, role, name, username } = req.body;
-    try {
-      const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-      const uid = userCredential.user.uid;
-      const userRef = doc(fireDb, 'usuario', uid);
-      
-      await setDoc(userRef, {
-        uid,
-        name,
-        username,
-        registrationDate: Timestamp.fromDate(new Date()),
-        role,
-        email,
-        wishList: [],
-        reviews:[],
-        cart:[]
-      });
-      const newuser = new User({
-        name,
-        username,
-        registrationDate: Timestamp.fromDate(new Date()),
-        role,
-        email,
-        wishList: [],
-        reviews: [],
-        cart:[]
-      });
-      await User.create(newuser);
-  
-      const loginCredential = await signInWithEmailAndPassword(auth, email, password);
-      req.session.uid = uid;
-      req.session.token = await loginCredential.user.getIdToken();
-      req.session.role = role;
-  
-      res.status(201).json({ 
-        message: 'Registration successful',
-        user: { uid, name, username, email, role },
-        token: req.session.token 
-      });
-    } catch (error) {
-      console.error("Error al registrar usuario:", error);
-      let errorMessage = "Error al registrar usuario";
-      if (error.code === 'auth/weak-password') {
-        errorMessage = 'Contraseña insegura, genera una nueva contraseña';
-      } else if (error.code === 'auth/email-already-in-use') {
-        errorMessage = 'Email ya registrado';
-      }
-      res.status(400).json({ message: errorMessage });
-    }
-  },
-    async login(req, res) {
+
+    async register(req, res) {
+        const { email, password, role, name, username } = req.body;
         try {
-            const { email, password } = req.body;
+            const existing = await User.findOne({ email });
+            if (existing) {
+                return res.status(400).json({ message: 'Email ya registrado' });
+            }
 
-            const userCredential = await signInWithEmailAndPassword(auth, email, password);
-            const uid = userCredential.user.uid;
+            const hashedPassword = await bcrypt.hash(password, 10);
 
-            const userDoc = await getDoc(doc(fireDb, 'usuario', uid));
-            const userData = userDoc.data();
+            const newUser = await User.create({
+                name,
+                username,
+                email,
+                password: hashedPassword,
+                role,
+                registrationDate: new Date(),
+                wishList: [],
+                reviews: [],
+                cart: []
+            });
 
-            const token = await userCredential.user.getIdToken();
+            const token = jwt.sign(
+                { id: newUser._id, email: newUser.email, role: newUser.role },
+                process.env.JWT_SECRET,
+                { expiresIn: '7d' }
+            );
 
-            req.session.uid = uid;
-            req.session.role = userData.role;
-            req.session.token = token;
-
-            res.status(200).json({ message: "Inicio de sesión exitoso", user: userData, token });
+            res.status(201).json({
+                message: 'Registration successful',
+                user: { id: newUser._id, name, username, email, role },
+                token
+            });
         } catch (error) {
-            console.error("Error al iniciar sesión:", error);
-            res.status(500).json({ message: "Error al iniciar sesión" });
+            console.error("Error al registrar usuario:", error);
+            res.status(500).json({ message: 'Error al registrar usuario' });
         }
     },
+
+    async login(req, res) {
+        const { email, password } = req.body;
+        try {
+            const user = await User.findOne({ email });
+            if (!user) {
+                return res.status(404).json({ message: 'Usuario no encontrado' });
+            }
+
+            const validPassword = await bcrypt.compare(password, user.password);
+            if (!validPassword) {
+                return res.status(401).json({ message: 'Contraseña incorrecta' });
+            }
+
+            const token = jwt.sign(
+                { id: user._id, email: user.email, role: user.role },
+                process.env.JWT_SECRET,
+                { expiresIn: '7d' }
+            );
+
+            res.status(200).json({
+                message: 'Inicio de sesión exitoso',
+                user: { id: user._id, name: user.name, username: user.username, email: user.email, role: user.role },
+                token
+            });
+        } catch (error) {
+            console.error("Error al iniciar sesión:", error);
+            res.status(500).json({ message: 'Error al iniciar sesión' });
+        }
+    },
+
     async getUserProfile(req, res) {
         try {
             const { userId } = req.params;
-            const userDoc = await getDoc(doc(fireDb, 'usuario', userId));
-            if (!userDoc.exists()) {
+            const user = await User.findById(userId);
+            if (!user) {
                 return res.status(404).json({ message: 'Usuario no encontrado' });
             }
-            const userData = userDoc.data();
-    
-            let products = [];
-            if (userData.wishList && userData.wishList.length > 0) {
-                products = await ProductoModel.find({ _id: { $in: userData.wishList } });
+
+            let wishListProducts = [];
+            if (user.wishList && user.wishList.length > 0) {
+                wishListProducts = await ProductoModel.find({ _id: { $in: user.wishList } });
             }
-    
-            res.json({ user: userData, wishListProducts: products });
+
+            res.json({ user, wishListProducts });
         } catch (error) {
             console.error('Error al obtener el perfil del usuario:', error);
             res.status(500).json({ message: 'Error del servidor', error: error.message });
@@ -124,80 +111,53 @@ const UserController = {
             if (!user) {
                 return res.status(404).json({ message: 'Usuario no encontrado' });
             }
-
-            const userQuery = collection(fireDb, 'usuario');
-            const userSnapshot = await userQuery.where('username', '==', username).get();
-            if (userSnapshot.empty) {
-                return res.status(404).json({ message: 'Usuario no encontrado en Firestore' });
-            }
-
-            userSnapshot.forEach(async (docSnapshot) => {
-                const uid = docSnapshot.id;
-                const userAuth = await admin.auth().getUser(uid);
-                await deleteFirebaseUser(userAuth);
-                await deleteDoc(doc(fireDb, 'usuario', uid));
-            });
-
             res.status(200).json({ message: 'Usuario eliminado correctamente' });
         } catch (error) {
             console.error('Error al eliminar usuario:', error);
-            if (!res.headersSent) {
-                res.status(500).json({ message: 'Error al eliminar usuario' });
-            }
+            res.status(500).json({ message: 'Error al eliminar usuario' });
         }
     },
 
-   async addToWishList(req, res) {
+    async addToWishList(req, res) {
         const { productId } = req.body;
         const { userId } = req.params;
-    try {
-        const userRef = doc(fireDb, 'usuario', userId);
-        const userDoc = await getDoc(userRef);
-        
-        if (!userDoc.exists()) {
-            return res.status(404).json({ message: 'Usuario no encontrado' });
+        try {
+            const user = await User.findById(userId);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuario no encontrado' });
+            }
+
+            if (!user.wishList.includes(productId)) {
+                user.wishList.push(productId);
+                await user.save();
+            }
+
+            const wishListProducts = await fetchWishListProducts(user.wishList);
+            res.status(200).json({ message: 'Producto añadido a la lista de deseos', wishList: user.wishList, wishListProducts });
+        } catch (error) {
+            console.error('Error al añadir a la lista de deseos:', error);
+            res.status(500).json({ message: 'Error al añadir a la lista de deseos' });
         }
+    },
 
-        const userData = userDoc.data();
-        let wishList = userData.wishList || [];
-        
-        if (!wishList.includes(productId)) {
-            wishList.push(productId);
-            await setDoc(userRef, { wishList }, { merge: true });
+    async removeFromWishList(req, res) {
+        const { productId, userId } = req.body;
+        try {
+            const user = await User.findById(userId);
+            if (!user) {
+                return res.status(404).json({ message: 'Usuario no encontrado' });
+            }
+
+            user.wishList = user.wishList.filter(id => id.toString() !== productId);
+            await user.save();
+
+            const wishListProducts = await fetchWishListProducts(user.wishList);
+            res.status(200).json({ message: 'Producto eliminado de la lista de deseos', wishList: user.wishList, wishListProducts });
+        } catch (error) {
+            console.error('Error al eliminar de la lista de deseos:', error);
+            res.status(500).json({ message: 'Error al eliminar de la lista de deseos' });
         }
-
-        const wishListProducts = await fetchWishListProducts(wishList);
-
-        res.status(200).json({ message: 'Producto añadido a la lista de deseos', wishList, wishListProducts });
-    } catch (error) {
-        console.error('Error al añadir a la lista de deseos:', error);
-        res.status(500).json({ message: 'Error al añadir a la lista de deseos' });
     }
-},
-async removeFromWishList(req, res) {
-    const { productId, userId } = req.body; 
-    try {
-        const userRef = doc(fireDb, 'usuario', userId);
-        const userDoc = await getDoc(userRef);
-        
-        if (!userDoc.exists()) {
-            return res.status(404).json({ message: 'Usuario no encontrado' });
-        }
-
-        const userData = userDoc.data();
-        let wishList = userData.wishList || [];
-        
-        wishList = wishList.filter(id => id !== productId);
-        await setDoc(userRef, { wishList }, { merge: true });
-
-        const wishListProducts = await fetchWishListProducts(wishList);
-
-        res.status(200).json({ message: 'Producto eliminado de la lista de deseos', wishList, wishListProducts });
-    } catch (error) {
-        console.error('Error al eliminar de la lista de deseos:', error);
-        res.status(500).json({ message: 'Error al eliminar de la lista de deseos' });
-    }
-}
 };
 
 module.exports = UserController;

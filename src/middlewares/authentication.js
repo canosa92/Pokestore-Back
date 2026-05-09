@@ -1,4 +1,4 @@
-const { admin } = require('../config/firebase'); // Ajusta la ruta según sea necesario
+const jwt = require('jsonwebtoken');
 
 const authentication = async (req, res, next) => {
     const authHeader = req.headers.authorization;
@@ -10,7 +10,7 @@ const authentication = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
 
     try {
-        const decodedToken = await admin.auth().verifyIdToken(token);
+        const decodedToken = jwt.verify(token, process.env.JWT_SECRET);
         req.user = decodedToken;
         next();
     } catch (error) {

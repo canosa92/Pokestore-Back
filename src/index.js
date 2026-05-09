@@ -28,5 +28,5 @@ app.use('/user', routerUser);
 app.use('/comment', router);
 
 app.listen(PORT, () => {
-  console.log(`Server started on http://localhost:${PORT}`);
+  console.log(`Server started on http://localhost:3000`);
 });
